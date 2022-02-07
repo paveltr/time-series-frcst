@@ -69,11 +69,28 @@ def reduce_mem_usage_sd(df, deep=True, verbose=False, obj_to_cat=False):
     print('Mem. usage decreased from {:5.2f} Mb to {:5.2f} Mb ({:.1f}% reduction)'.format(start_mem, end_mem, percent))
     return df
 
-def read_csv(file_path):
-    return reduce_mem_usage_sd(pd.read_csv(file_path))
-
+def read_csv(file_path, nrows=None):
+    return reduce_mem_usage_sd(pd.read_csv(file_path, nrows=nrows))
 
 
 def add_month_to_year_month(year_month, offset=1):
     year_month = pd.to_datetime(year_month, format='%Y-%m') + pd.DateOffset(months=offset)
     return year_month.dt.strftime('%Y-%m')
+
+
+def generate_pivot_features(df, column_level, index_level, 
+                            value_column='sales', agg_func='sum', 
+                            normalize=True):
+    features = pd.pivot_table(df,
+                             index=index_level,
+                             columns=column_level,
+                             values=value_column,
+                             aggfunc=agg_func
+                                    )\
+                        .reset_index()\
+                        .fillna(0)
+    if normalize:
+        features.iloc[:, len(index_level):] = \
+        features.iloc[:, len(index_level):].divide(features.iloc[:, len(index_level):].sum(axis=1), axis=0)
+        
+    return features
