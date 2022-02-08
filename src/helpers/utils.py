@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-import gc
+import datetime 
 
 def sd(col, max_loss_limit=0.001, avg_loss_limit=0.001, na_loss_limit=0, n_uniq_loss_limit=0, fillna=0):
     """
@@ -94,3 +94,6 @@ def generate_pivot_features(df, column_level, index_level,
         features.iloc[:, len(index_level):].divide(features.iloc[:, len(index_level):].sum(axis=1), axis=0)
         
     return features
+
+def convert_to_date(date):
+    return datetime.datetime.strptime(date, '%Y-%m-%d')

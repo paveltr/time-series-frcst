@@ -1,26 +1,34 @@
 from this import d
 import numpy as np
 import pandas as pd
-from helpers.ml import log_transform, TargetEncoderCV
+from helpers.ml import log_transform, TargetEncoderCV, cyclic_encoding, prediction_fix, custom_RMSE
 from sklearn.model_selection import KFold
 from lightgbm import LGBMRegressor
 import shap
 import datetime
 from fbprophet import Prophet
-from helpers.ml import cyclic_encoding, prediction_fix
 import warnings
 import logging
 
 warnings.filterwarnings('ignore')
 logger = logging.getLogger('ml_pipeline.'+__name__)
-logging.basicConfig(filename='logs/errors.log', level=logging.INFO, 
+logging.basicConfig(filename='logs/errors.log', level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(name)s %(message)s')
 
 
-
 class MLPipeline:
-    def __init__(self, train_start_date, train_end_date,
-                 test_start_date, test_end_date, prediction_start_date, prediction_end_date, target_col_name='sales'):
+    def __init__(self, train_start_date=None, train_end_date=None,
+                 test_start_date=None, test_end_date=None, prediction_start_date=None, prediction_end_date=None,
+                 target_col_name='sales', except_cols=['date',
+                                                       'year_month',
+                                                       'year_quarter',
+                                                       'date_month',
+                                                       'weekday_week',
+                                                       'year_week',
+                                                       'target',
+                                                       'sales',
+                                                       'week',
+                                                       'month']):
 
         assert prediction_end_date >= prediction_start_date > test_end_date >= test_start_date > train_end_date >= train_start_date
         if (prediction_start_date - test_end_date).days < 1:
@@ -35,18 +43,28 @@ class MLPipeline:
         self.prediction_end_date = prediction_end_date
         self.target_col_name = target_col_name
         self.predictions = {}
+        self.number_of_predictions = (
+            self.prediction_end_date - self.prediction_start_date).days + 1
+        self.except_cols = except_cols
+        self.prediction_month = int(prediction_start_date.month)
+
+    def create_weights(self, data):
+        year_weights = {'2017': 0.5, '2018': 0.75, '2019': 1.0}
+        data['weight'] = data['year'].map(year_weights)
+        data.loc[data['weight'].isnull(), 'weight'] = data[data['weight'].isnull(
+        )]['year'].map(lambda x: 0.25 if x < 2017 else 1.0)
+        monthly_weights = {}
+        for i in range(12):
+            monthly_weights[i +
+                            1] = 0.25 if (self.prediction_month - i) < 3 else 0
+
+        data['weight'] = (
+            data['weight'] + data['month'].map(monthly_weights)).fillna(1)
+        return data
 
     def generate_train_columns(self, all_columns):
-        except_cols = \
-            ['date',
-             'year_month',
-             'year_quarter',
-             'date_month',
-             'weekday_week',
-             'year_week',
-             'target',
-             'sales']
-        train_cols = [c for c in all_columns if c not in except_cols]
+
+        train_cols = [c for c in all_columns if c not in self.except_cols]
         return train_cols
 
     def create_datasets(self, base_data):
@@ -56,10 +74,14 @@ class MLPipeline:
 
         train_data = base_data[base_data.date.between(self.train_start_date,
                                                       self.train_end_date)].reset_index(drop=True)
+
+        train_data = self.create_weights(train_data)
         test_data = base_data[base_data.date.between(self.test_start_date,
                                                      self.test_end_date)].reset_index(drop=True)
         predict_data = base_data[base_data.date.between(self.prediction_start_date,
                                                         self.prediction_end_date)].reset_index(drop=True)
+        self.number_of_groups = predict_data[[
+            'hierarchy1_id', 'storetype_id']].drop_duplicates().shape[0]
 
         if target_col not in predict_data:
             predict_data[target_col] = 0
@@ -88,9 +110,10 @@ class MLPipeline:
             predict_data[enc_cols] = te_cv.transform(predict_data[cat_cols])
 
         return (train_data[train_cols], log_transform(train_data[target_col])), (test_data[train_cols], log_transform(test_data[target_col])), \
-            (predict_data, log_transform(predict_data[target_col]))
+            (predict_data, log_transform(
+                predict_data[target_col])), train_data['weight']
 
-    def train_model(self, train_data, test_data):
+    def train_model(self, train_data, test_data, sample_weight=None):
         params = {
             'max_bin': [128],
             'num_leaves': [8],
@@ -106,7 +129,10 @@ class MLPipeline:
         model = LGBMRegressor(n_estimators=10**5, n_jobs=-1, **params)
         model.fit(train_data[0], train_data[1],
                   eval_set=test_data,
-                  eval_metric='rmse', verbose=1000, early_stopping_rounds=50)
+                  sample_weight=sample_weight,
+                  eval_metric=custom_RMSE,
+                  verbose=1000,
+                  early_stopping_rounds=50)
         self.clf = model
         logger.info('Model trained')
 
@@ -121,17 +147,19 @@ class MLPipeline:
     def update_recursive_features(data, prediction_date):
         for lag in [1, 2, 3, 4, 5, 6, 7, 14, 28]:
             data['total_sales_last_%s_days' % str(lag)] = data['total_sales_last_%s_days' % str(
-                lag)] - data['total_sales_last_1_days'] + data['predicted']
+                lag)] - data['total_sales_last_1_days'] + prediction_fix(log_transform(data['predicted'], mode='back'))
 
-        if prediction_date.isocalendar()[1] > data['week']:
+        if int(prediction_date.isocalendar()[1]) > int(data['week'].values[0]):
             data['week_sales_to_date'] = 0
         else:
-            data['week_sales_to_date'] = data['predicted']
+            data['week_sales_to_date'] = prediction_fix(
+                log_transform(data['predicted'].values, mode='back'))
 
-        if prediction_date.month > data['month']:
+        if int(prediction_date.month) > int(data['month'].values[0]):
             data['month_sales_to_date'] = 0
         else:
-            data['month_sales_to_date'] = data['predicted']
+            data['month_sales_to_date'] = prediction_fix(
+                log_transform(data['predicted'].values, mode='back'))
 
         data['percentage_sold_of_month'] = data['month_sales_to_date'] / \
             data['avg_same_month_sales']
@@ -145,13 +173,13 @@ class MLPipeline:
         data['month'] = data.date.dt.month
         data['quarter'] = data.date.dt.quarter
         data['year'] = data.date.dt.year
-        data = cyclic_encoding(data)
+        for col in ['weekday', 'week', 'month', 'quarter']:
+            data = cyclic_encoding(data, col, max_val_mode='manual')
 
         return data
 
     def recursive_prediction(self, prediction_data):
-        print('prediction cols', prediction_data.columns)
-        data = prediction_data[0].copy()
+        data = prediction_data.copy()
         data = data[data['date'] == self.prediction_start_date]
         data['predicted'] = self.clf.predict(data[self.clf.feature_name_])
         range_of_dates = pd.date_range(self.prediction_start_date + datetime.timedelta(days=1),
@@ -160,12 +188,42 @@ class MLPipeline:
             new_prediction_data = self.update_recursive_features(
                 data.tail(1).copy(), date)
             new_prediction_data['predicted'] = self.clf.predict(
-                new_prediction_data[data[self.clf.feature_name_]])
+                new_prediction_data[self.clf.feature_name_])
             data = data.append(new_prediction_data[data.columns])
             print(f'Recurisely predicted date: str({date})')
-        data['predicted'] = prediction_fix(log_transform(data['predicted'], mode='back'))
+        data['predicted'] = prediction_fix(
+            log_transform(data['predicted'], mode='back'))
         logger.info('Recursive prediction finished')
+
+        if data.shape[0] != self.number_of_predictions:
+            raise Exception(
+                '''
+                Number of LGB recursive prediction doesn't equal to number of days. 
+                Expected: {0}, received: {1}'''.format(self.number_of_predictions,
+                                                       data.shape[0]))
         return data.reset_index(drop=True)
+
+    def lgb_prediction(self, pr_data):
+        prediction_data = pr_data[0]
+        prediction_pairs = prediction_data[[
+            'hierarchy1_id', 'storetype_id']].drop_duplicates()
+        pred_df = pd.DataFrame()
+        for (hier, store) in prediction_pairs.to_numpy():
+            preds = prediction_data[(prediction_data.hierarchy1_id == hier) &
+                                    (prediction_data.storetype_id == store)]\
+                .sort_values(by='date').head(1)
+
+            pred_df = pred_df.append(
+                self.recursive_prediction(preds), ignore_index=True)
+        if pred_df.shape[0] != self.number_of_predictions*self.number_of_groups:
+            raise Exception(
+                '''
+                Total of recursive predictions doesn't equal to number of days multiplied by number of groups. 
+                Expected: {0}, received: {1}'''.format(self.number_of_predictions*self.number_of_groups,
+                                                       pred_df.shape[0]))
+
+        pred_df['sales'] = log_transform(pr_data[1].values, mode='back')
+        return pred_df
 
     @staticmethod
     def baseline_fbprophet(tr, pr):
@@ -182,14 +240,25 @@ class MLPipeline:
     @staticmethod
     def baseline_average(tr, pr):
         # Based on seasonal average
-        avg = tr.groupby(['weekday_week'])['sales'].mean().to_dict()
-        if tr[tr['year'] == pr['year'].max()-1].shape[0] > 0:
-            trend = tr[tr['year'] == pr['year'].max()]['sales'].sum().values / \
-                tr[tr['year'] == pr['year'].max() - 1]['sales'].sum().values
-        else:
-            trend = np.ones(pr['weekday_week'].shape[0])
+        trend = 1
+        if tr[tr['year'] < pr['year'].max()].shape[0] > 0:
+            print('Taking average by weekday and week')
+            avg = tr.groupby(['weekday_week'])['sales'].mean()
+            if tr[tr['year'] == pr['year'].max()-1].shape[0] > 0:
+                trend = tr[tr['year'] == pr['year'].max()]['sales'].sum() / \
+                    tr[tr['year'] == pr['year'].max() - 1]['sales'].sum()
 
-        return prediction_fix(pr['weekday_week'].map(avg).values*trend)
+            print('Average sales: min={0:0.1f}, mean={1:0.1f}, max={1:0.1f}'.format(
+                avg.min(), avg.mean(), avg.max()))
+            return prediction_fix(pr['weekday_week'].map(avg.to_dict()).values*trend)
+
+        else:
+            print('Taking average by weekday only')
+            avg = tr[tr.year == pr['year'].max()].groupby(['weekday'])[
+                'sales'].mean()
+            print('Average sales: min={0:0.1f}, mean={1:0.1f}, max={1:0.1f}'.format(
+                avg.min(), avg.mean(), avg.max()))
+            return prediction_fix(pr['weekday'].map(avg.to_dict()))
 
     def baseline_models(self, base_data):
         train = base_data[base_data.date.between(
@@ -198,7 +267,7 @@ class MLPipeline:
             self.prediction_start_date, self.prediction_end_date)]
 
         prediction_results = prediction[[
-            'date', 'year', 'weekday_week', 'hierarchy1_id', 'storetype_id']].drop_duplicates()
+            'date', 'year', 'weekday_week', 'weekday', 'hierarchy1_id', 'storetype_id']].drop_duplicates()
         prediction_pairs = prediction_results[[
             'hierarchy1_id', 'storetype_id']].drop_duplicates()
 
@@ -222,25 +291,38 @@ class MLPipeline:
                 f'Making baseline predictions for product category {hier} and store type {store}')
 
         self.predictions['baseline'] = prediction_results[[
-            'date', 'hierarchy1_id', 'storetype_id', 'predicted_fbprophet', 'predicted_fbprophet']]
+            'date', 'hierarchy1_id', 'storetype_id', 'predicted_seasonal_average', 'predicted_fbprophet']]
+
+        if self.number_of_predictions*self.number_of_groups != self.predictions['baseline'].shape[0]:
+            raise Exception(
+                '''
+                    Total of baseline predictions doesn't equal to number of days multiplied by number of groups. 
+                    Expected: {0}, received: {1}'''.format(self.number_of_predictions*self.number_of_groups,
+                                                           self.predictions['baseline'].shape[0]))
 
     def combine_results(self):
         results = pd.merge(self.predictions['lgb'].rename(columns={'predicted': 'lgb_predicted'}),
                            self.predictions['baseline'], on=[
                                'date', 'hierarchy1_id', 'storetype_id']
                            )
+        if results.shape[0] != self.number_of_predictions*self.number_of_groups:
+            raise Exception(
+                '''
+                Total of predictions doesn't equal to number of days multiplied by number of groups. 
+                Expected: {0}, received: {1}'''.format(self.number_of_predictions*self.number_of_groups,
+                                                       results.shape[0]))
         self.predictions['merged'] = results
 
     def lgb_model_building(self, base_data):
 
         print('Started building LightGBM model...')
 
-        tr, vl, pr = self.create_datasets(base_data)
+        tr, vl, pr, w = self.create_datasets(base_data)
 
-        self.train_model(tr, vl)
+        self.train_model(tr, vl, sample_weight=w)
         print('LGB model trained!')
 
-        predicted_data = self.recursive_prediction(pr)
+        predicted_data = self.lgb_prediction(pr)
 
         print('LGB predictions finished!')
         self.predictions['lgb'] = predicted_data[[
