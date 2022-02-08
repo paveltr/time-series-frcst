@@ -28,4 +28,5 @@ There are two notebooks
 
 ## Model performance
 
+Model performace is based on Weighted MAPE metric
 ![alt text](src/performance.png)
