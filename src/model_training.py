@@ -116,11 +116,12 @@ class MLPipeline:
     def train_model(self, train_data, test_data, sample_weight=None):
         params = {
             'max_bin': [128],
-            'num_leaves': [8],
-            'reg_alpha': [1.2],
-            'reg_lambda': [1.2],
+            'max_depth': [5],
+            'num_leaves': [50],
+            'reg_alpha': [0.5],
+            'reg_lambda': [0.5],
             'min_data_in_leaf': [50],
-            'learning_rate': [0.001]
+            'learning_rate': [0.01]
         }
         print('Train data shape: NROWS = {0}, NCOLUMNS = {1}'.format(
             train_data[0].shape[0], train_data[0].shape[1]))

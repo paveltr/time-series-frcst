@@ -4,7 +4,7 @@ import datetime
 from helpers.utils import add_month_to_year_month, generate_pivot_features
 from helpers.ml import cyclic_encoding
 import logging
-import gc 
+import gc
 
 logger = logging.getLogger('ml_pipeline.'+__name__)
 logging.basicConfig(filename='logs/errors.log', level=logging.INFO,
@@ -97,6 +97,15 @@ class FeaturePipeline:
             self.expected_number_of_predictions))
         logger.info('Created basic data')
         return pd.concat([base_data_train, base_data_test, base_data_predict[base_data_train.columns]])
+
+    @staticmethod
+    def create_last_year_sales(data):
+        df = data.groupby(['year', 'weekday_week',
+                           'hierarchy1_id', 'storetype_id'])['sales'].sum().reset_index()
+
+        df['year'] = df['year'] + 1
+
+        return df
 
     @staticmethod
     def create_product_features(data):
@@ -226,8 +235,9 @@ class FeaturePipeline:
         # process features
         prodF = self.create_product_features(data)
         catF = self.create_categorical_features(data)
+        salesF = self.create_last_year_sales(data)
 
-        del data 
+        del data
         gc.collect()
 
         bData = self.create_lag_features(bData)
@@ -240,5 +250,7 @@ class FeaturePipeline:
                          'year_month', 'hierarchy1_id', 'storetype_id'])
         bData = pd.merge(bData, prodF, how='left', on=[
                          'year_month', 'hierarchy1_id', 'storetype_id'])
+        bData = pd.merge(bData, salesF, how='left', on=[
+                         'year', 'weekday_week', 'hierarchy1_id', 'storetype_id'])
         logger.info('Feature building pipeline finished!')
         self.features = bData

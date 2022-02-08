@@ -1,4 +1,4 @@
-from numpy import sin, cos, pi, mean, log, exp, zeros_like, float64, ones
+from numpy import sin, cos, pi, mean, log, exp, zeros_like, float64, ones, array
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.base import clone
 from sklearn.model_selection import check_cv
@@ -9,11 +9,12 @@ from sklearn.model_selection import KFold
 
 def custom_RMSE(y_true, y_pred):
     # Higher penalty for predicting lower values than greater ones
-    delta = 1.1*(y_pred - y_true) if y_pred < y_true else 0.9*(y_pred - y_true)
-    squared_residual = delta**2
+    delta = [1.1*(yp - yt) if yp < yt else 0.9*(yp - yt)
+             for yt, yp in zip(y_true, y_pred)]
+    squared_residual = array(delta)**2
     grad = squared_residual
     hess = ones(len(y_true))
-    return grad, hess
+    return 'wrmse', mean(grad), False
 
 
 def prediction_fix(X):

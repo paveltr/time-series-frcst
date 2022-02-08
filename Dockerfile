@@ -1,8 +1,9 @@
-FROM python:3.7-slim
+FROM tiangolo/python-machine-learning:python3.7
+
 
 ENV MAIN_PATH="/ml_service"
 ENV CONDA_ENV_PATH /opt/miniconda
-ENV MY_CONDA_PY3ENV "ml-env"
+ENV MY_CONDA_PY3ENV "myenv"
 ENV CONDA_ACTIVATE "source $CONDA_ENV_PATH/bin/activate $MY_CONDA_PY3ENV"
 WORKDIR $MAIN_PATH
 ENV PATH $CONDA_ENV_PATH/bin:$PATH
@@ -21,14 +22,10 @@ RUN chmod -R 777 $MAIN_PATH/src
 RUN chmod -R 777 $MAIN_PATH/output
 RUN chmod -R 777 $MAIN_PATH/notebooks
 
-RUN conda update --quiet --yes conda
-RUN conda create -y -n $MY_CONDA_PY3ENV
+# RUN conda update --quiet --yes conda
+RUN conda env create -f conda.yaml
 
-RUN pip install --upgrade pip && \
-    pip install --upgrade setuptools && \
-    bash -c '$CONDA_ACTIVATE' && \
-    conda install --yes -c conda-forge -c anaconda --file conda.txt
-
+RUN bash -c '$CONDA_ACTIVATE'
 WORKDIR $MAIN_PATH/src
 
-CMD ["python", "ml_pipeline.py"]
+CMD ["conda run -n myenv python", "ml_pipeline.py"]
