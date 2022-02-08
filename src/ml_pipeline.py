@@ -50,7 +50,7 @@ def save_predictions(predictions, path):
 def set_config(filepath):
     '''This function reads configuration file'''
     with open(filepath, 'r') as ymlfile:
-        cfg = yaml.load(ymlfile)
+        cfg = yaml.safe_load(ymlfile)
     return update_dates(cfg)
 
 
