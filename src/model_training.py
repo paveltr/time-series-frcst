@@ -72,6 +72,7 @@ class MLPipeline:
         train_cols, target_col = self.generate_train_columns(
             base_data.columns), self.target_col_name
 
+        base_data = self.add_fb_features(base_data)
         train_data = base_data[base_data.date.between(self.train_start_date,
                                                       self.train_end_date)].reset_index(drop=True)
 
@@ -144,8 +145,7 @@ class MLPipeline:
             max_display=25
         )
 
-    @staticmethod
-    def update_recursive_features(data, prediction_date):
+    def update_recursive_features(self, data, prediction_date):
         for lag in [1, 2, 3, 4, 5, 6, 7, 14, 28]:
             data['total_sales_last_%s_days' % str(lag)] = data['total_sales_last_%s_days' % str(
                 lag)] - data['total_sales_last_1_days'] + prediction_fix(log_transform(data['predicted'], mode='back'))
@@ -176,7 +176,7 @@ class MLPipeline:
         data['year'] = data.date.dt.year
         for col in ['weekday', 'week', 'month', 'quarter']:
             data = cyclic_encoding(data, col, max_val_mode='manual')
-
+        data = self.add_fb_features(data)
         return data
 
     def recursive_prediction(self, prediction_data):
@@ -226,17 +226,60 @@ class MLPipeline:
         pred_df['sales'] = log_transform(pr_data[1].values, mode='back')
         return pred_df
 
+    def create_fb_features(self, data):
+
+        train = data[(data.date.between(self.train_start_date, self.train_end_date))][['date', 'hierarchy1_id',
+                                                                                       'storetype_id', 'sales']]\
+            .rename(columns={'date': 'ds', 'sales': 'y'})
+        predict = data[(data.date.between(self.test_start_date, self.prediction_end_date))][['date', 'hierarchy1_id',
+                                                                                             'storetype_id', 'sales']]\
+            .rename(columns={'date': 'ds'})
+
+        train['predicted'] = 0
+        predict['predicted'] = 0
+
+        prediction_pairs = data[['hierarchy1_id',
+                                 'storetype_id']].drop_duplicates()
+
+        for (hier, store) in prediction_pairs.to_numpy():
+            tr = train[(train.hierarchy1_id == hier) &
+                       (train.storetype_id == store)]
+            pr = predict[(predict.hierarchy1_id == hier) &
+                         (predict.storetype_id == store)]
+            prophet = Prophet(daily_seasonality=True, weekly_seasonality=True,
+                              yearly_seasonality=False, changepoint_prior_scale=0.01)
+            prophet.fit(tr[['ds', 'y']])
+
+            train.loc[(train.hierarchy1_id == hier) & (train.storetype_id == store), 'predicted'
+                      ] = prophet.predict(tr[['ds']])
+            predict.loc[(predict.hierarchy1_id == hier) & (
+                predict.storetype_id == store), 'predicted'] = prophet.predict(pr[['ds']])
+
+        dict_df = pd.concat([train[['ds', 'hierarchy1_id', 'storetype_id', 'predicted']],
+                             predict[['ds', 'hierarchy1_id', 'storetype_id', 'predicted']]])
+        dict_df['ds'] = dict_df['ds'].astype(str).str[:10]
+        self.fb_encoder = dict_df.set_index(['ds', 'hierarchy1_id', 'storetype_id'])[
+            'predicted'].to_dict()
+
+    def add_fb_features(self, df):
+        df['fb_feature'] = df[['date', 'hierarchy1_id', 'storetype_id']]\
+            .apply(lambda x: self.fb_encoder[(str(x['date'])[:10], x['hierarchy1_id'], x['storetype_id'])], axis=1)
+        return df
+
     @staticmethod
-    def baseline_fbprophet(tr, pr):
+    def baseline_fbprophet(tr, pr, return_train=False):
         prophet = Prophet(daily_seasonality=True, weekly_seasonality=True,
                           yearly_seasonality=False, changepoint_prior_scale=0.01)
         prophet.fit(
             tr.rename(columns={'date': 'ds', 'sales': 'y'})[['ds', 'y']])
 
         preds = prophet.predict(
-            pr.rename(columns={'date': 'ds'}))[['ds', 'yhat']]
-
-        return prediction_fix(preds['yhat'].values)
+            pr.rename(columns={'date': 'ds'}))['yhat'].values
+        if return_train:
+            tr_preds = prophet.predict(tr.rename(columns={'date': 'ds'})[['ds']])[
+                'yhat'].values
+            return prediction_fix(tr_preds), prediction_fix(preds)
+        return prediction_fix(preds)
 
     @staticmethod
     def baseline_average(tr, pr):
@@ -306,6 +349,7 @@ class MLPipeline:
                            self.predictions['baseline'], on=[
                                'date', 'hierarchy1_id', 'storetype_id']
                            )
+        results['lgb_predicted'] = 0.5*results['lgb_predicted'] + 0.5*results['predicted_fbprophet']
         if results.shape[0] != self.number_of_predictions*self.number_of_groups:
             raise Exception(
                 '''
@@ -318,6 +362,7 @@ class MLPipeline:
 
         print('Started building LightGBM model...')
 
+        self.create_fb_features(base_data)
         tr, vl, pr, w = self.create_datasets(base_data)
 
         self.train_model(tr, vl, sample_weight=w)
