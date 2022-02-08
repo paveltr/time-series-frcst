@@ -11,13 +11,16 @@ To make predictions, you need to put files with data to `data` folder. The scrip
 
 > store.csv
 
-The command to create predictions:
+To build and run docker image
+```
+bash make_predictions.sh
+```
+
+To create predictions inside of the `docker container`:
 
 ```
 bash run_pipeline.sh
 ```
-
-It needs to be run inside of the docker container.
 
 # Jupyter notebooks
 
