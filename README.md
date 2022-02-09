@@ -1,10 +1,10 @@
 # Time series sales forecasting
 
-This repository containts python script for time series forecasting of items sold.
+This repository contains a python script for time series forecasting of items sold.
 
 # Python script usage
 
-To make predictions, you need to put files with data to `data` folder. The script requires 3 files:
+To make predictions, you need to put files with data to `data` folder as a zip archive. The archive should include 3 files:
 > sales.csv
 
 > taxonomy.csv
